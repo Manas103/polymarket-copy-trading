@@ -19,6 +19,7 @@ from src.signal.whale_profiler import WhaleProfiler
 from src.executor.trade_executor import TradeExecutor
 
 if TYPE_CHECKING:
+    from src.notifier.telegram import TelegramNotifier
     from src.signal.confluence import ConfluenceDetector
 
 logger = logging.getLogger(__name__)
@@ -41,6 +42,7 @@ class TradingPipeline:
         whale_profiler: WhaleProfiler,
         activity_tracker: WhaleActivityTracker,
         confluence: "ConfluenceDetector | None" = None,
+        notifier: "TelegramNotifier | None" = None,
     ) -> None:
         self._config = config
         self._monitor = monitor
@@ -54,6 +56,7 @@ class TradingPipeline:
         self._profiler = whale_profiler
         self._activity = activity_tracker
         self._confluence = confluence
+        self._notifier = notifier
 
     async def initialize(self) -> None:
         """Load last block from DB and restore dedup state."""
@@ -167,6 +170,8 @@ class TradingPipeline:
 
                     result = await self._executor.execute(trade)
                     await self._repo.update_trade_result(trade_id, result)
+                    if self._notifier:
+                        await self._notifier.notify_trade(signal, trade, result)
 
                     if result.status.value in ("FILLED", "PARTIALLY_FILLED"):
                         self._risk.record_trade()
@@ -303,6 +308,8 @@ class TradingPipeline:
 
                 result = await self._executor.execute(trade)
                 await self._repo.update_trade_result(trade_id, result)
+                if self._notifier:
+                    await self._notifier.notify_trade(signal, trade, result)
 
                 if result.status.value in ("FILLED", "PARTIALLY_FILLED"):
                     self._risk.record_trade()

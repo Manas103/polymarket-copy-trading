@@ -24,6 +24,7 @@ from src.signal.filter import TradeFilter
 from src.signal.confluence import ConfluenceDetector
 from src.signal.generator import SignalGenerator
 from src.dashboard.server import DashboardServer
+from src.notifier.telegram import TelegramNotifier
 from src.signal.whale_activity_tracker import WhaleActivityTracker
 from src.signal.whale_profiler import WhaleProfiler
 
@@ -79,6 +80,9 @@ async def run() -> None:
     activity_tracker = WhaleActivityTracker(config, repo)
     confluence = ConfluenceDetector(config)
 
+    notifier = TelegramNotifier(config.telegram.bot_token, config.telegram.chat_id)
+    await notifier.start()
+
     pipeline = TradingPipeline(
         config=config,
         monitor=monitor,
@@ -92,6 +96,7 @@ async def run() -> None:
         whale_profiler=whale_profiler,
         activity_tracker=activity_tracker,
         confluence=confluence,
+        notifier=notifier,
     )
 
     dashboard = DashboardServer(config=config, repo=repo)
@@ -101,6 +106,7 @@ async def run() -> None:
         await asyncio.gather(pipeline.run(), dashboard.run())
     finally:
         logger.info("Shutting down...")
+        await notifier.stop()
         await whale_profiler.stop()
         await resolver.stop()
         await db.close()

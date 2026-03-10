@@ -130,6 +130,12 @@ class DatabaseConfig:
 
 
 @dataclass(frozen=True)
+class TelegramConfig:
+    bot_token: str = field(default_factory=lambda: os.getenv("TELEGRAM_BOT_TOKEN", ""))
+    chat_id: str = field(default_factory=lambda: os.getenv("TELEGRAM_CHAT_ID", ""))
+
+
+@dataclass(frozen=True)
 class AppConfig:
     polygon: PolygonConfig = field(default_factory=PolygonConfig)
     clob: ClobConfig = field(default_factory=ClobConfig)
@@ -139,3 +145,4 @@ class AppConfig:
     circuit_breaker: CircuitBreakerConfig = field(default_factory=CircuitBreakerConfig)
     whales: WhaleConfig = field(default_factory=WhaleConfig)
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
+    telegram: TelegramConfig = field(default_factory=TelegramConfig)
