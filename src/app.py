@@ -7,6 +7,7 @@ import logging
 import sys
 
 from web3 import AsyncWeb3
+from web3.middleware import ExtraDataToPOAMiddleware
 from web3.providers import AsyncHTTPProvider
 
 from config import AppConfig
@@ -57,6 +58,7 @@ async def run() -> None:
     repo = Repository(db)
 
     w3 = AsyncWeb3(AsyncHTTPProvider(config.polygon.rpc_url))
+    w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
     chain_id = await w3.eth.chain_id
     logger.info("Connected to chain %d, RPC: %s", chain_id, config.polygon.rpc_url)
 
