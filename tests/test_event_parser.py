@@ -24,18 +24,30 @@ def _make_log(
     log_index: int = 0,
     block_number: int = 50000000,
 ) -> dict:
-    """Build a fake raw log matching OrderFilled ABI."""
+    """Build a fake raw log matching OrderFilled ABI (indexed topics + data)."""
     order_hash = b"\x01" * 32
 
+    # Indexed params go in topics (padded to 32 bytes)
+    maker_clean = maker[2:] if maker.startswith("0x") else maker
+    taker_clean = taker[2:] if taker.startswith("0x") else taker
+    topic_maker = bytes.fromhex(maker_clean.lower().zfill(64))
+    topic_taker = bytes.fromhex(taker_clean.lower().zfill(64))
+
+    # Non-indexed params go in data
     data = encode(
-        ["bytes32", "address", "address", "uint256", "uint256", "uint256", "uint256", "uint256"],
-        [order_hash, maker, taker, maker_asset_id, taker_asset_id,
+        ["uint256", "uint256", "uint256", "uint256", "uint256"],
+        [maker_asset_id, taker_asset_id,
          maker_amount_filled, taker_amount_filled, fee],
     )
 
     return {
         "address": address,
-        "topics": [bytes.fromhex(ORDER_FILLED_EVENT_SIG[2:])],
+        "topics": [
+            bytes.fromhex(ORDER_FILLED_EVENT_SIG[2:]),
+            order_hash,
+            topic_maker,
+            topic_taker,
+        ],
         "data": data,
         "transactionHash": bytes.fromhex(tx_hash[2:]),
         "logIndex": log_index,

@@ -13,14 +13,11 @@ from src.models.events import ExchangeType, OrderFilledEvent
 
 logger = logging.getLogger(__name__)
 
-# OrderFilled(bytes32 orderHash, address maker, address taker,
-#             uint256 makerAssetId, uint256 takerAssetId,
+# OrderFilled(bytes32 indexed orderHash, address indexed maker,
+#             address indexed taker, uint256 makerAssetId, uint256 takerAssetId,
 #             uint256 makerAmountFilled, uint256 takerAmountFilled, uint256 fee)
-# All parameters are non-indexed, so they appear in `data`.
-ORDER_FILLED_TYPES = [
-    "bytes32",  # orderHash
-    "address",  # maker
-    "address",  # taker
+# First 3 params are indexed (topics[1..3]); remaining 5 are in `data`.
+ORDER_FILLED_DATA_TYPES = [
     "uint256",  # makerAssetId
     "uint256",  # takerAssetId
     "uint256",  # makerAmountFilled
@@ -81,17 +78,35 @@ class EventParser:
         if exchange_type is None:
             return None
 
-        data = bytes.fromhex(log["data"].hex() if isinstance(log["data"], bytes) else log["data"][2:])
-        decoded = decode(ORDER_FILLED_TYPES, data)
+        # Indexed params from topics
+        topics = log["topics"]
+        order_hash_raw = topics[1]
+        if isinstance(order_hash_raw, bytes):
+            order_hash = "0x" + order_hash_raw.hex()
+        else:
+            order_hash = order_hash_raw if order_hash_raw.startswith("0x") else "0x" + order_hash_raw
 
-        order_hash = "0x" + decoded[0].hex()
-        maker = decoded[1]
-        taker = decoded[2]
-        maker_asset_id = decoded[3]
-        taker_asset_id = decoded[4]
-        maker_amount_filled = decoded[5]
-        taker_amount_filled = decoded[6]
-        fee = decoded[7]
+        maker_raw = topics[2]
+        if isinstance(maker_raw, bytes):
+            maker = "0x" + maker_raw[-20:].hex()
+        else:
+            maker = "0x" + maker_raw[-40:]
+
+        taker_raw = topics[3]
+        if isinstance(taker_raw, bytes):
+            taker = "0x" + taker_raw[-20:].hex()
+        else:
+            taker = "0x" + taker_raw[-40:]
+
+        # Non-indexed params from data
+        data = bytes.fromhex(log["data"].hex() if isinstance(log["data"], bytes) else log["data"][2:])
+        decoded = decode(ORDER_FILLED_DATA_TYPES, data)
+
+        maker_asset_id = decoded[0]
+        taker_asset_id = decoded[1]
+        maker_amount_filled = decoded[2]
+        taker_amount_filled = decoded[3]
+        fee = decoded[4]
 
         tx_hash = log["transactionHash"]
         if isinstance(tx_hash, bytes):

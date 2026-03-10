@@ -16,7 +16,7 @@ NEG_RISK_CTF_EXCHANGE = "0xC5d563A36AE78145C45a50134d48A1215220f80a"
 
 # OrderFilled event signature (same ABI on both exchanges)
 ORDER_FILLED_EVENT_SIG = (
-    "0xd0a08e8c493f9c94f29311604c9de1d4e1f89571f2882a4e7b2e3b1685ac1459"
+    "0xd0a08e8c493f9c94f29311604c9de1b4e8c8d4c06bd0c789af57f2d65bfec0f6"
 )
 
 
