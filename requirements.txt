@@ -1,0 +1,5 @@
+web3>=7.0
+py-clob-client>=0.1.8
+aiohttp>=3.9
+aiosqlite>=0.20
+python-dotenv>=1.0

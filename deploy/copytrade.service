@@ -1,0 +1,29 @@
+[Unit]
+Description=Polymarket Copy Trading Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=copytrade
+Group=copytrade
+WorkingDirectory=/opt/copytrade
+ExecStart=/opt/copytrade/venv/bin/python -m src.app
+Restart=always
+RestartSec=10
+
+# Load environment from file
+EnvironmentFile=/opt/copytrade/.env
+
+# Security hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/opt/copytrade/data /var/log/copytrade
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=copytrade
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "polymarket-copytrade"
+version = "0.1.0"
+description = "Automated copy trading system for Polymarket whale wallets"
+requires-python = ">=3.11"
+dependencies = [
+    "web3>=7.0",
+    "py-clob-client>=0.1.8",
+    "aiohttp>=3.9",
+    "aiosqlite>=0.20",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "aioresponses>=0.7",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.setuptools.packages.find]
+include = ["src*", "config*"]
