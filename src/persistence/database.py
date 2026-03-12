@@ -103,6 +103,15 @@ class Database:
         await self._conn.executescript(SCHEMA_SQL)
         await self._conn.commit()
 
+    async def create_reader_connection(self) -> aiosqlite.Connection:
+        """Create a separate read-only connection for the dashboard."""
+        conn = await aiosqlite.connect(self._db_path)
+        conn.row_factory = aiosqlite.Row
+        await conn.execute("PRAGMA journal_mode=WAL")
+        await conn.execute("PRAGMA busy_timeout=5000")
+        await conn.execute("PRAGMA query_only=ON")
+        return conn
+
     async def close(self) -> None:
         if self._conn:
             await self._conn.close()

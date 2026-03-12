@@ -101,13 +101,15 @@ async def run() -> None:
         notifier=notifier,
     )
 
-    dashboard = DashboardServer(config=config, repo=repo)
+    dashboard_conn = await db.create_reader_connection()
+    dashboard = DashboardServer(config=config, conn=dashboard_conn)
     logger.info("Dashboard: http://localhost:%d", dashboard.port)
 
     try:
         await asyncio.gather(pipeline.run(), dashboard.run())
     finally:
         logger.info("Shutting down...")
+        await dashboard_conn.close()
         await notifier.stop()
         await whale_profiler.stop()
         await resolver.stop()
