@@ -133,9 +133,18 @@ class DashboardServer:
         }
 
     async def _handle_index(self, request: web.Request) -> web.Response:
-        data = await self._collect_data()
-        html = render_dashboard(data)
-        return web.Response(text=html, content_type="text/html")
+        try:
+            data = await self._collect_data()
+            html = render_dashboard(data)
+            return web.Response(text=html, content_type="text/html")
+        except Exception:
+            logger.exception("Dashboard render failed")
+            return web.Response(
+                text="<h1>Dashboard temporarily unavailable</h1><p>Check logs. Auto-retry in 15s.</p>"
+                     '<meta http-equiv="refresh" content="15">',
+                content_type="text/html",
+                status=503,
+            )
 
     async def _handle_health(self, request: web.Request) -> web.Response:
         return web.json_response({"status": "ok"})
