@@ -21,6 +21,7 @@ from src.executor.trade_executor import TradeExecutor
 if TYPE_CHECKING:
     from src.notifier.telegram import TelegramNotifier
     from src.signal.confluence import ConfluenceDetector
+    from src.signal.fill_accumulator import FillAccumulator
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +43,7 @@ class TradingPipeline:
         whale_profiler: WhaleProfiler,
         activity_tracker: WhaleActivityTracker,
         confluence: "ConfluenceDetector | None" = None,
+        fill_accumulator: "FillAccumulator | None" = None,
         notifier: "TelegramNotifier | None" = None,
     ) -> None:
         self._config = config
@@ -56,6 +58,7 @@ class TradingPipeline:
         self._profiler = whale_profiler
         self._activity = activity_tracker
         self._confluence = confluence
+        self._accumulator = fill_accumulator
         self._notifier = notifier
 
     async def initialize(self) -> None:
@@ -96,19 +99,28 @@ class TradingPipeline:
             signals = await self._signal_gen.process_events(events)
 
             for signal in signals:
+              try:
+                # Skip non-whale events entirely (don't persist to DB)
+                if signal.action == SignalAction.SKIP_NOT_WHALE:
+                    continue
+
                 # Persist the event (second defense against duplicate processing)
                 is_new = await self._repo.insert_event(signal.event)
                 if not is_new:
                     signal.action = SignalAction.SKIP_DUPLICATE
-                    await self._repo.insert_signal(signal)
                     logger.debug(
                         "Duplicate event skipped: %s", signal.event.dedup_key
                     )
                     continue
 
                 if not signal.should_copy:
-                    # Persist skipped signal
-                    await self._repo.insert_signal(signal)
+                    # Persist skipped signal (but skip noise actions to control DB size)
+                    if signal.action not in (
+                        SignalAction.SKIP_NOT_WHALE,
+                        SignalAction.SKIP_DUPLICATE,
+                        SignalAction.SKIP_EXCHANGE_TAKER,
+                    ):
+                        await self._repo.insert_signal(signal)
                     logger.debug(
                         "Signal skipped: %s for %s",
                         signal.action.value,
@@ -147,6 +159,13 @@ class TradingPipeline:
                         )
                         continue
 
+                    # Need orderbook data to price the sell
+                    if not orderbook:
+                        signal.action = SignalAction.SKIP_NO_ORDERBOOK
+                        await self._repo.insert_signal(signal)
+                        logger.info("Sell skipped: no orderbook for token %s", token_id)
+                        continue
+
                     # Get our position
                     invested_usd, position_tokens = await self._repo.get_position(token_id)
                     if position_tokens <= 0:
@@ -157,7 +176,7 @@ class TradingPipeline:
                     # Persist signal and build sell trade
                     signal_id = await self._repo.insert_signal(signal)
                     trade = self._executor.build_copy_trade(
-                        signal, orderbook, signal_id, position_tokens=position_tokens  # type: ignore[arg-type]
+                        signal, orderbook, signal_id, position_tokens=position_tokens
                     )
                     trade_id = await self._repo.insert_trade(trade)
 
@@ -192,9 +211,37 @@ class TradingPipeline:
                     continue
 
                 # --- BUY PATH ---
-                # Conviction check
+                token_id = str(signal.event.token_id)
+
+                # Fill accumulator: aggregate small fills before conviction check
+                conviction_amount = signal.event.usdc_amount
+                if self._accumulator is not None:
+                    await self._accumulator.record_fill(
+                        signal.whale_address, token_id, signal.event.usdc_amount
+                    )
+                    accumulated = self._accumulator.get_aggregate(
+                        signal.whale_address, token_id
+                    )
+                    if accumulated.already_fired:
+                        signal.action = SignalAction.SKIP_ACCUMULATOR_FIRED
+                        await self._repo.insert_signal(signal)
+                        logger.debug(
+                            "Accumulator already fired for %s on %s",
+                            signal.whale_address[:10],
+                            token_id[:12],
+                        )
+                        continue
+                    conviction_amount = accumulated.aggregate_usd
+                    logger.info(
+                        "Accumulator status: %s…%s on %s… — $%.0f across %d fills",
+                        signal.whale_address[:6], signal.whale_address[-4:],
+                        token_id[:12],
+                        accumulated.aggregate_usd, accumulated.fill_count,
+                    )
+
+                # Conviction check (uses aggregate amount if accumulator enabled)
                 conviction = await self._profiler.check_conviction(
-                    signal.whale_address, signal.event.usdc_amount
+                    signal.whale_address, conviction_amount
                 )
                 if not conviction.passed:
                     signal.action = SignalAction.SKIP_LOW_CONVICTION
@@ -208,9 +255,6 @@ class TradingPipeline:
 
                 # Store conviction_pct for dynamic sizing
                 signal.conviction_pct = conviction.conviction_pct
-
-                # Whale activity check
-                token_id = str(signal.event.token_id)
                 activity = await self._activity.check_activity(
                     signal.whale_address, token_id
                 )
@@ -320,6 +364,8 @@ class TradingPipeline:
                         trade.amount_usd,
                         result.filled_amount,
                     )
+                    if self._accumulator is not None:
+                        await self._accumulator.mark_fired(signal.whale_address, token_id)
                     logger.info(
                         "Trade %s: %s (order: %s, filled: $%.2f @ %.4f)",
                         result.status.value,
@@ -336,6 +382,13 @@ class TradingPipeline:
                         result.error_message,
                     )
 
+              except Exception:
+                logger.exception(
+                    "Error processing signal for event %s",
+                    getattr(signal, "event", None) and signal.event.dedup_key,
+                )
+                continue
+
             # Save block cursor after processing all events
             await self._repo.set_last_block(self._monitor._last_block)  # type: ignore[arg-type]
 
@@ -351,5 +404,10 @@ class TradingPipeline:
             return SignalAction.SKIP_PRICE_MOVED
         if "liquidity" in reason_lower:
             return SignalAction.SKIP_LOW_LIQUIDITY
-        # Default for other filter rejections (slippage, price too high, etc.)
+        if "slippage" in reason_lower:
+            return SignalAction.SKIP_SLIPPAGE_HIGH
+        if "no orderbook" in reason_lower or "no valid ask" in reason_lower:
+            return SignalAction.SKIP_NO_ORDERBOOK
+        if "price too high" in reason_lower:
+            return SignalAction.SKIP_PRICE_TOO_HIGH
         return SignalAction.SKIP_BELOW_THRESHOLD

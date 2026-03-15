@@ -30,6 +30,15 @@ class TelegramNotifier:
             await self._session.close()
             self._session = None
 
+    async def notify_status(self, message: str) -> None:
+        """Send a plain status notification. Never raises — failures are logged."""
+        if not self.enabled or not self._session:
+            return
+        try:
+            await self._send(message)
+        except Exception:
+            logger.exception("Failed to send Telegram status notification")
+
     async def notify_trade(
         self,
         signal: object,

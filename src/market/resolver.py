@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Optional
 
@@ -24,7 +25,11 @@ class MarketResolver:
         self._session: aiohttp.ClientSession | None = None
 
     async def start(self) -> None:
-        self._session = aiohttp.ClientSession()
+        self._session = aiohttp.ClientSession(
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            }
+        )
 
     async def stop(self) -> None:
         if self._session:
@@ -61,45 +66,75 @@ class MarketResolver:
             return None
 
     async def _fetch_from_gamma(self, token_id: str) -> Optional[MarketInfo]:
-        """Fetch market metadata from Gamma API."""
+        """Fetch market metadata from Gamma API with retry."""
         if not self._session:
             return None
 
-        try:
-            url = f"{self._gamma_url}/markets"
-            params = {"clob_token_ids": token_id}
-            async with self._session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                if resp.status != 200:
-                    logger.warning("Gamma API failed: status %d", resp.status)
-                    return None
-                data = await resp.json()
-                if not data:
-                    return None
-                return self._parse_gamma_response(token_id, data[0])
-        except Exception:
-            logger.exception("Error fetching market info for %s", token_id)
-            return None
+        for attempt in range(3):
+            try:
+                url = f"{self._gamma_url}/markets"
+                params = {"clob_token_ids": token_id}
+                async with self._session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    if resp.status != 200:
+                        logger.warning("Gamma API failed: status %d (attempt %d/3)", resp.status, attempt + 1)
+                        if attempt < 2:
+                            await asyncio.sleep(1.0 * (attempt + 1))
+                        continue
+                    data = await resp.json()
+                    if not data:
+                        return None
+                    return self._parse_gamma_response(token_id, data[0])
+            except Exception:
+                logger.warning("Error fetching market info for %s (attempt %d/3)", token_id, attempt + 1)
+                if attempt < 2:
+                    await asyncio.sleep(1.0 * (attempt + 1))
+        return None
 
     def _parse_gamma_response(
         self, token_id: str, data: dict
     ) -> MarketInfo:
-        """Parse Gamma API response into MarketInfo."""
-        # Determine which outcome this token represents
-        tokens = data.get("tokens", [])
+        """Parse Gamma API response into MarketInfo.
+
+        Handles both camelCase (current API) and snake_case (legacy) keys.
+        """
+        import json as _json
+
+        condition_id = data.get("conditionId") or data.get("condition_id") or ""
+        neg_risk = data.get("negRisk") or data.get("neg_risk") or False
+        end_date = data.get("endDateIso") or data.get("end_date_iso") or ""
+
+        # Determine which outcome this token represents.
+        # Current API: separate `clobTokenIds` (JSON string) + `outcomes` (JSON string)
+        # Legacy API: `tokens` list with {token_id, outcome} dicts
         outcome = ""
-        for tok in tokens:
-            if tok.get("token_id") == token_id:
-                outcome = tok.get("outcome", "")
-                break
+        tokens = data.get("tokens") or []
+        if tokens:
+            for tok in tokens:
+                if tok.get("token_id") == token_id:
+                    outcome = tok.get("outcome", "")
+                    break
+        else:
+            # Parse from clobTokenIds + outcomes (JSON-encoded string arrays)
+            raw_ids = data.get("clobTokenIds", "[]")
+            raw_outcomes = data.get("outcomes", "[]")
+            try:
+                clob_ids = _json.loads(raw_ids) if isinstance(raw_ids, str) else raw_ids
+                outcomes_list = _json.loads(raw_outcomes) if isinstance(raw_outcomes, str) else raw_outcomes
+                for cid, out in zip(clob_ids, outcomes_list):
+                    if cid == token_id:
+                        outcome = out
+                        break
+            except (ValueError, TypeError):
+                logger.warning("Failed to parse clobTokenIds/outcomes for %s", token_id[:20])
 
         return MarketInfo(
-            condition_id=data.get("condition_id", ""),
+            condition_id=condition_id,
             question=data.get("question", ""),
             outcome=outcome,
             token_id=token_id,
-            neg_risk=data.get("neg_risk", False),
+            neg_risk=bool(neg_risk),
             active=data.get("active", True),
-            end_date=data.get("end_date_iso", ""),
+            end_date=end_date,
         )
 
     def _parse_orderbook(

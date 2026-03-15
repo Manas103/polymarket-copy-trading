@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 
 def _fmt_uptime(secs: float) -> str:
     h, rem = divmod(int(secs), 3600)
@@ -15,6 +17,15 @@ def _truncate(text: str, length: int = 50) -> str:
     if len(text) <= length:
         return text
     return text[:length - 3] + "..."
+
+
+def _action_class(action: str) -> str:
+    a = action.upper()
+    if a.startswith("COPY_"):
+        return "green"
+    if "FAILED" in a or "ERROR" in a:
+        return "red"
+    return "yellow"
 
 
 def _status_class(status: str) -> str:
@@ -34,6 +45,22 @@ def _bar(value: float, max_val: float, width: int = 120) -> str:
     return f'<span class="bar" style="width:{px}px"></span>'
 
 
+def _bot_health(cursor_updated_at: str | None) -> tuple[str, str]:
+    """Return (status_text, css_class) based on block cursor freshness."""
+    if not cursor_updated_at:
+        return "Never Started", "red"
+    try:
+        last_update = datetime.fromisoformat(cursor_updated_at)
+        if last_update.tzinfo is None:
+            last_update = last_update.replace(tzinfo=timezone.utc)
+        age = (datetime.now(timezone.utc) - last_update).total_seconds()
+        if age <= 120:
+            return "Online", "green"
+        return f"Offline ({int(age)}s stale)", "red"
+    except (ValueError, TypeError):
+        return "Unknown", "yellow"
+
+
 def render_dashboard(data: dict) -> str:
     uptime = _fmt_uptime(data["uptime_secs"])
     last_block = data["last_block"] or "N/A"
@@ -44,6 +71,9 @@ def render_dashboard(data: dict) -> str:
     positions = data["open_positions"]
     max_pos = data["max_open_positions"]
     budget_remaining = max(0, max_spend - total_spend)
+
+    # --- Health ---
+    health_text, health_class = _bot_health(data.get("cursor_updated_at"))
 
     # --- Cards ---
     cards_html = f"""
@@ -128,6 +158,62 @@ def render_dashboard(data: dict) -> str:
       {signal_rows if signal_rows else '<tr><td colspan="3" class="empty">No signals yet</td></tr>'}
     </table>"""
 
+    # --- Active Accumulations ---
+    accumulations = data.get("active_accumulations", [])
+    fill_window = data.get("fill_window_seconds", 1800)
+    acc_rows = ""
+    for a in accumulations:
+        whale_short = a["whale_address"][:6] + "..." + a["whale_address"][-4:] if len(a["whale_address"]) > 12 else a["whale_address"]
+        tid = a["token_id"][:12] + "..." if len(a["token_id"]) > 15 else a["token_id"]
+        # Compute time remaining from first fill
+        try:
+            first_dt = datetime.fromisoformat(a["first_fill"])
+            if first_dt.tzinfo is None:
+                first_dt = first_dt.replace(tzinfo=timezone.utc)
+            age = (datetime.now(timezone.utc) - first_dt).total_seconds()
+            remaining = max(0, fill_window - age)
+            remaining_str = f"{int(remaining // 60)}m {int(remaining % 60)}s"
+        except (ValueError, TypeError):
+            remaining_str = "?"
+        acc_rows += f"""<tr>
+          <td class="mono">{whale_short}</td>
+          <td class="mono">{tid}</td>
+          <td class="green" style="font-weight:bold;">${a["total_usd"]:.0f}</td>
+          <td>{a["fill_count"]}</td>
+          <td>{a["last_fill"]}</td>
+          <td>{remaining_str}</td>
+        </tr>"""
+
+    acc_html = f"""
+    <h2>Active Accumulations</h2>
+    <table>
+      <tr><th>Whale</th><th>Token</th><th>Accumulated</th><th>Fills</th><th>Last Fill</th><th>Window Left</th></tr>
+      {acc_rows if acc_rows else '<tr><td colspan="6" class="empty">No active accumulations</td></tr>'}
+    </table>"""
+
+    # --- Whale Activity Feed ---
+    whale_signals = data.get("whale_signals", [])
+    whale_rows = ""
+    for ws in whale_signals:
+        ac = _action_class(ws["action"])
+        whale_short = ws["whale_address"][:6] + "..." + ws["whale_address"][-4:] if len(ws["whale_address"]) > 12 else ws["whale_address"]
+        question = _truncate(ws.get("market_question", ""), 40)
+        whale_rows += f"""<tr>
+          <td>{ws["created_at"]}</td>
+          <td class="mono">{whale_short}</td>
+          <td class="{ac}">{ws["action"]}</td>
+          <td>{question}</td>
+          <td>${ws["usd_amount"]:.0f}</td>
+          <td>{ws.get("outcome", "")}</td>
+        </tr>"""
+
+    whale_html = f"""
+    <h2>Whale Activity (recent 50)</h2>
+    <table>
+      <tr><th>Time</th><th>Whale</th><th>Action</th><th>Market</th><th>USD</th><th>Outcome</th></tr>
+      {whale_rows if whale_rows else '<tr><td colspan="6" class="empty">No whale activity</td></tr>'}
+    </table>"""
+
     # --- 7-Day Spend History ---
     history = data["spend_history"]
     max_day_spend = max((d["total_spend_usd"] for d in history), default=1) or 1
@@ -178,12 +264,14 @@ def render_dashboard(data: dict) -> str:
 <body>
   <div class="header">
     <h1>Polymarket Bot Monitor</h1>
-    <span class="header-info">Uptime: {uptime} | Last Block: {last_block} | Auto-refresh: 15s</span>
+    <span class="header-info"><span class="{health_class}" style="font-weight:bold;">&#9679; {health_text}</span> | Uptime: {uptime} | Last Block: {last_block} | Auto-refresh: 15s</span>
   </div>
   {cards_html}
   {positions_html}
   {trades_html}
   {signal_html}
+  {acc_html}
+  {whale_html}
   {history_html}
 </body>
 </html>"""

@@ -75,7 +75,7 @@ class TradingConfig:
     portfolio_cache_ttl_seconds: int = 300
 
     # Time-to-resolution filter
-    min_hours_to_resolution: float = 24.0
+    min_hours_to_resolution: float = 6.0
 
     # Orderbook depth filter
     min_depth_multiplier: float = 2.0
@@ -86,6 +86,11 @@ class TradingConfig:
     # Whale sell-to-buy ratio detection
     max_sell_to_buy_ratio: float = 1.5
     activity_window_hours: float = 4.0
+
+    # Fill accumulator: aggregate small fills before conviction check
+    fill_accumulator_enabled: bool = True
+    fill_accumulator_window_seconds: int = 1800  # 30 minutes
+    fill_accumulator_cooldown_seconds: int = 3600  # 1 hour
 
     # Multi-whale confluence
     confluence_enabled: bool = False

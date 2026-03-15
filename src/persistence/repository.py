@@ -323,7 +323,45 @@ class Repository:
 
         return buy_usd, sell_usd
 
+    async def get_block_cursor_updated_at(self) -> str | None:
+        """Return the updated_at timestamp from the block cursor."""
+        cursor = await self.conn.execute(
+            "SELECT updated_at FROM block_cursor WHERE id = 1"
+        )
+        row = await cursor.fetchone()
+        return row["updated_at"] if row else None
+
     # -- Dashboard queries --
+
+    async def get_recent_whale_signals(self, limit: int = 50) -> list[dict]:
+        """Return recent whale signals with USD estimates."""
+        cursor = await self.conn.execute(
+            """SELECT ts.whale_address, ts.action, ts.market_question,
+                      ts.outcome, ts.whale_price, ts.created_at,
+                      we.maker_amount_filled, we.taker_amount_filled,
+                      we.maker_asset_id
+               FROM trade_signals ts
+               LEFT JOIN whale_events we ON ts.event_dedup_key = we.dedup_key
+               WHERE ts.whale_address != ''
+               ORDER BY ts.id DESC LIMIT ?""",
+            (limit,),
+        )
+        rows = await cursor.fetchall()
+        result = []
+        for r in rows:
+            maker_filled = float(r["maker_amount_filled"] or 0)
+            taker_filled = float(r["taker_amount_filled"] or 0)
+            maker_asset = str(r["maker_asset_id"] or "")
+            usd = maker_filled / 1e6 if maker_asset == "0" else taker_filled / 1e6
+            result.append({
+                "whale_address": r["whale_address"],
+                "action": r["action"],
+                "market_question": r["market_question"] or "",
+                "outcome": r["outcome"] or "",
+                "usd_amount": usd,
+                "created_at": r["created_at"],
+            })
+        return result
 
     async def get_all_open_positions(self) -> list[dict]:
         """Return all positions with invested > 0."""
@@ -402,3 +440,97 @@ class Repository:
             }
             for r in rows
         ]
+
+    # -- Fill accumulator persistence --
+
+    async def insert_fill(
+        self, whale_address: str, token_id: str, usd_amount: float
+    ) -> None:
+        """Persist a fill for the accumulator."""
+        await self.conn.execute(
+            """INSERT INTO fill_accumulator (whale_address, token_id, usd_amount)
+               VALUES (?, ?, ?)""",
+            (whale_address.lower(), token_id, usd_amount),
+        )
+        await self.conn.commit()
+
+    async def mark_accumulator_fired(
+        self, whale_address: str, token_id: str
+    ) -> None:
+        """Record that a signal fired for this (whale, token) pair."""
+        await self.conn.execute(
+            """INSERT INTO fill_accumulator_fired (whale_address, token_id, fired_at)
+               VALUES (?, ?, datetime('now'))
+               ON CONFLICT(whale_address, token_id) DO UPDATE SET
+                 fired_at = datetime('now')""",
+            (whale_address.lower(), token_id),
+        )
+        await self.conn.commit()
+
+    async def load_accumulator_fills(
+        self, window_seconds: int
+    ) -> list[tuple[str, str, float, str]]:
+        """Load all fills within the window for startup restore.
+
+        Returns list of (whale_address, token_id, usd_amount, recorded_at).
+        """
+        cursor = await self.conn.execute(
+            """SELECT whale_address, token_id, usd_amount, recorded_at
+               FROM fill_accumulator
+               WHERE recorded_at >= datetime('now', ? || ' seconds')
+               ORDER BY recorded_at ASC""",
+            (f"-{window_seconds}",),
+        )
+        return [
+            (r["whale_address"], r["token_id"], r["usd_amount"], r["recorded_at"])
+            for r in await cursor.fetchall()
+        ]
+
+    async def load_accumulator_fired(
+        self, cooldown_seconds: int
+    ) -> list[tuple[str, str, str]]:
+        """Load active fired records within cooldown.
+
+        Returns list of (whale_address, token_id, fired_at).
+        """
+        cursor = await self.conn.execute(
+            """SELECT whale_address, token_id, fired_at
+               FROM fill_accumulator_fired
+               WHERE fired_at >= datetime('now', ? || ' seconds')""",
+            (f"-{cooldown_seconds}",),
+        )
+        return [
+            (r["whale_address"], r["token_id"], r["fired_at"])
+            for r in await cursor.fetchall()
+        ]
+
+    async def cleanup_old_fills(self, window_seconds: int) -> None:
+        """Delete expired fill accumulator rows."""
+        await self.conn.execute(
+            "DELETE FROM fill_accumulator WHERE recorded_at < datetime('now', ? || ' seconds')",
+            (f"-{window_seconds}",),
+        )
+        await self.conn.commit()
+
+    # -- Housekeeping --
+
+    async def cleanup_old_events(self, keep_days: int = 3) -> int:
+        """Delete whale_events and trade_signals older than keep_days.
+
+        Returns the number of whale_events deleted.
+        """
+        cutoff = f"-{keep_days} days"
+
+        # Delete old trade_signals (references whale_events via dedup_key)
+        await self.conn.execute(
+            "DELETE FROM trade_signals WHERE created_at < datetime('now', ?)",
+            (cutoff,),
+        )
+
+        cursor = await self.conn.execute(
+            "DELETE FROM whale_events WHERE created_at < datetime('now', ?)",
+            (cutoff,),
+        )
+        deleted = cursor.rowcount
+        await self.conn.commit()
+        return deleted

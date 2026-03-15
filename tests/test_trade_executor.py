@@ -162,7 +162,7 @@ class TestTradeExecutor:
         }
 
         result = await self.executor.execute(trade)
-        assert result.status == TradeStatus.FILLED
+        assert result.status == TradeStatus.PENDING
         assert result.order_id == "order_002"
 
     @pytest.mark.asyncio

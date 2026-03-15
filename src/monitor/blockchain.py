@@ -23,9 +23,13 @@ class BlockchainMonitor:
         self._polygon = config.polygon
         self._last_block: int | None = None
 
+    _RPC_TIMEOUT = 30.0  # seconds — prevents indefinite hangs on stalled RPC
+
     async def get_latest_safe_block(self) -> int:
         """Get the latest block minus reorg safety buffer."""
-        latest = await self._w3.eth.block_number
+        latest = await asyncio.wait_for(
+            self._w3.eth.block_number, timeout=self._RPC_TIMEOUT
+        )
         return max(0, latest - self._polygon.reorg_safety_blocks)
 
     def set_last_block(self, block_number: int) -> None:
@@ -76,16 +80,19 @@ class BlockchainMonitor:
         self, from_block: int, to_block: int
     ) -> list[LogReceipt]:
         """Fetch OrderFilled logs from both exchanges in a single call."""
-        logs = await self._w3.eth.get_logs(
-            {
-                "fromBlock": from_block,
-                "toBlock": to_block,
-                "address": [
-                    self._polygon.ctf_exchange,
-                    self._polygon.neg_risk_ctf_exchange,
-                ],
-                "topics": [self._polygon.order_filled_event_sig],
-            }
+        logs = await asyncio.wait_for(
+            self._w3.eth.get_logs(
+                {
+                    "fromBlock": from_block,
+                    "toBlock": to_block,
+                    "address": [
+                        self._polygon.ctf_exchange,
+                        self._polygon.neg_risk_ctf_exchange,
+                    ],
+                    "topics": [self._polygon.order_filled_event_sig],
+                }
+            ),
+            timeout=self._RPC_TIMEOUT,
         )
         return list(logs)
 
@@ -97,7 +104,9 @@ class BlockchainMonitor:
         timestamps: dict[int, int] = {}
 
         for block_num in block_numbers:
-            block = await self._w3.eth.get_block(block_num)
+            block = await asyncio.wait_for(
+                self._w3.eth.get_block(block_num), timeout=self._RPC_TIMEOUT
+            )
             timestamps[block_num] = block["timestamp"]
 
         return timestamps

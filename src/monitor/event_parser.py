@@ -36,6 +36,8 @@ _EXCHANGE_ADDRESSES = {CTF_EXCHANGE.lower(), NEG_RISK_CTF_EXCHANGE.lower()}
 class EventParser:
     """Decode raw logs into OrderFilledEvent objects with deduplication."""
 
+    _MAX_SEEN = 100_000  # Prune when set exceeds this size
+
     def __init__(self) -> None:
         self._seen: set[str] = set()
 
@@ -67,6 +69,15 @@ class EventParser:
                 continue
 
             events.append(event)
+
+        # Prune dedup set to prevent unbounded memory growth
+        if len(self._seen) > self._MAX_SEEN:
+            # Keep only the most recent half (arbitrary but effective)
+            excess = len(self._seen) - self._MAX_SEEN // 2
+            it = iter(self._seen)
+            to_remove = [next(it) for _ in range(excess)]
+            self._seen -= set(to_remove)
+            logger.info("Pruned dedup set: %d entries removed", excess)
 
         return events
 

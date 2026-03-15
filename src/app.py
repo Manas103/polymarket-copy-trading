@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import sys
+import time
 
+from aiohttp import web
 from web3 import AsyncWeb3
 from web3.middleware import ExtraDataToPOAMiddleware
 from web3.providers import AsyncHTTPProvider
@@ -23,8 +26,9 @@ from src.risk.circuit_breaker import CircuitBreaker
 from src.risk.manager import RiskManager
 from src.signal.filter import TradeFilter
 from src.signal.confluence import ConfluenceDetector
+from src.signal.fill_accumulator import FillAccumulator
 from src.signal.generator import SignalGenerator
-from src.dashboard.server import DashboardServer
+from src.dashboard.server import create_dashboard_app
 from src.notifier.telegram import TelegramNotifier
 from src.signal.whale_activity_tracker import WhaleActivityTracker
 from src.signal.whale_profiler import WhaleProfiler
@@ -35,6 +39,21 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)],
 )
 logger = logging.getLogger(__name__)
+
+
+async def _run_pipeline(pipeline: TradingPipeline, notifier: TelegramNotifier | None = None) -> None:
+    """Run the pipeline forever, restarting on crash."""
+    while True:
+        try:
+            await pipeline.run()
+            return  # Clean exit
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Pipeline crashed, restarting in 5s...")
+            if notifier:
+                await notifier.notify_status("Pipeline CRASHED — restarting in 5s...")
+            await asyncio.sleep(5)
 
 
 async def run() -> None:
@@ -81,6 +100,9 @@ async def run() -> None:
     await whale_profiler.start()
     activity_tracker = WhaleActivityTracker(config, repo)
     confluence = ConfluenceDetector(config)
+    fill_accumulator = FillAccumulator(config, repo=repo) if config.trading.fill_accumulator_enabled else None
+    if fill_accumulator:
+        await fill_accumulator.restore_from_db()
 
     notifier = TelegramNotifier(config.telegram.bot_token, config.telegram.chat_id)
     await notifier.start()
@@ -98,16 +120,49 @@ async def run() -> None:
         whale_profiler=whale_profiler,
         activity_tracker=activity_tracker,
         confluence=confluence,
+        fill_accumulator=fill_accumulator,
         notifier=notifier,
     )
 
-    dashboard = DashboardServer(config=config, db_path=config.database.path)
-    logger.info("Dashboard: http://localhost:%d", dashboard.port)
+    # Start in-process dashboard (shared event loop, no SQLite contention)
+    dashboard_app = create_dashboard_app(repo, config, fill_accumulator, start_time=time.time())
+    runner = web.AppRunner(dashboard_app)
+    await runner.setup()
+    port = int(os.getenv("DASHBOARD_PORT", "8080"))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    try:
+        await site.start()
+        logger.info("Dashboard: http://localhost:%d", port)
+    except OSError as e:
+        logger.error("Dashboard failed to start: %s", e)
+        site = None
+
+    await notifier.notify_status(
+        f"Bot started — tracking {len(config.whales.addresses)} whales"
+    )
+
+    async def _periodic_cleanup() -> None:
+        """Delete old whale_events/trade_signals every 6 hours to control DB size."""
+        while True:
+            await asyncio.sleep(6 * 3600)
+            try:
+                deleted = await repo.cleanup_old_events(keep_days=3)
+                if deleted > 0:
+                    logger.info("Housekeeping: deleted %d old whale events", deleted)
+            except Exception:
+                logger.exception("Housekeeping cleanup failed")
 
     try:
-        await asyncio.gather(pipeline.run(), dashboard.run())
+        await asyncio.gather(
+            _run_pipeline(pipeline, notifier),
+            _periodic_cleanup(),
+        )
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        pass
     finally:
         logger.info("Shutting down...")
+        await notifier.notify_status("Bot shutting down")
+        await runner.cleanup()
         await notifier.stop()
         await whale_profiler.stop()
         await resolver.stop()

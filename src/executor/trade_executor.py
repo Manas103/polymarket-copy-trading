@@ -150,9 +150,9 @@ class TradeExecutor:
                 filled_price=float(result.get("avgPrice", 0)),
             )
         elif status_str == "delayed":
-            # Order accepted, will be matched
+            # Order accepted but NOT yet matched — don't treat as filled
             return TradeResult(
-                status=TradeStatus.FILLED,
+                status=TradeStatus.PENDING,
                 order_id=order_id,
             )
         else:

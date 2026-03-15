@@ -81,9 +81,25 @@ CREATE TABLE IF NOT EXISTS positions (
     PRIMARY KEY (token_id)
 );
 
+CREATE TABLE IF NOT EXISTS fill_accumulator (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    whale_address TEXT NOT NULL,
+    token_id TEXT NOT NULL,
+    usd_amount REAL NOT NULL,
+    recorded_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS fill_accumulator_fired (
+    whale_address TEXT NOT NULL,
+    token_id TEXT NOT NULL,
+    fired_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (whale_address, token_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_whale_events_maker_ts ON whale_events(LOWER(maker), block_timestamp);
 CREATE INDEX IF NOT EXISTS idx_whale_events_taker_ts ON whale_events(LOWER(taker), block_timestamp);
 CREATE INDEX IF NOT EXISTS idx_whale_events_block ON whale_events(block_number);
+CREATE INDEX IF NOT EXISTS idx_fill_acc_whale_token ON fill_accumulator(whale_address, token_id, recorded_at);
 """
 
 
